@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blockchain Misinformation System</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 8px;
+            margin: 8px 0;
+            display: inline-block;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+    </style>
+</head>
+<body>
+    <h1>Blockchain Misinformation System</h1>
+    
+    <div class="section">
+        <h2>User Registration</h2>
+        <input type="text" id="username" placeholder="Enter your username">
+        <button id="registerBtn">Register</button>
+        <p id="userStatus">Not registered</p>
+    </div>
+    
+    <div class="section">
+        <h2>Add Content</h2>
+        <textarea id="contentHash" placeholder="Enter content hash (simulated)"></textarea>
+        <button id="addContentBtn">Add Content</button>
+        <p id="contentStatus"></p>
+    </div>
+    
+    <div class="section">
+        <h2>Vote on Content</h2>
+        <input type="number" id="contentId" placeholder="Content ID">
+        <div>
+            <input type="checkbox" id="voteType">
+            <label for="voteType">Upvote (unchecked for downvote)</label>
+        </div>
+        <button id="voteBtn">Submit Vote</button>
+        <p id="voteStatus"></p>
+    </div>
+    
+    <div class="section">
+        <h2>Content Verification</h2>
+        <div id="contentList">
+            <!-- Content will be displayed here -->
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/web3@1.5.2/dist/web3.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
