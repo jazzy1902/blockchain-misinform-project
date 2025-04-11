@@ -29,8 +29,9 @@ contract MediaRegistry is ERC721("MediaHouseBadge", "MHB") {
     // Mappings
     mapping(uint256 => MediaHouse) public tokenIdToMediaHouses;
     mapping(address => uint256) public addressToTokenId;
+    // address -> token -> Media house details
     mapping(uint256 => VerificationVote[]) public verificationVotes;
-    mapping(address => bool) public hasVoted;
+    mapping(address => mapping(uint256 => bool)) public hasVoted;
     
     // Events
     event VerificationRequested(uint256 tokenId, address mediaHouse);
@@ -57,16 +58,19 @@ contract MediaRegistry is ERC721("MediaHouseBadge", "MHB") {
     }
 
     function requestVerification(uint256 tokenId) external {
+        // can request verification for only its token
         require(ownerOf(tokenId) == msg.sender, "Not token owner");
+        // already verified
         require(!tokenIdToMediaHouses[tokenId].isVerified, "Already verified");
         
+        // verification timestamp set, with an event triggered
         tokenIdToMediaHouses[tokenId].verificationRequestTimestamp = block.timestamp;
         emit VerificationRequested(tokenId, msg.sender);
     }
 
     function voteOnVerification(uint256 tokenId, bool approved) external {
         require(balanceOf(msg.sender) > 0, "Only registered media can vote");
-        require(!hasVoted[msg.sender], "Already voted");
+        require(!hasVoted[msg.sender][tokenId], "Already voted");
         require(tokenIdToMediaHouses[tokenId].verificationRequestTimestamp > 0, "No active request");
         require(block.timestamp <= tokenIdToMediaHouses[tokenId].verificationRequestTimestamp + VOTING_PERIOD, "Voting period ended");
         
@@ -79,7 +83,7 @@ contract MediaRegistry is ERC721("MediaHouseBadge", "MHB") {
             votingPower: votingPower
         }));
         
-        hasVoted[msg.sender] = true;
+        hasVoted[msg.sender][tokenId] = true;
         emit Voted(tokenId, msg.sender, approved, votingPower);
         
         _checkVerificationStatus(tokenId);
@@ -108,12 +112,14 @@ contract MediaRegistry is ERC721("MediaHouseBadge", "MHB") {
     }
     
     function _updateReputations(uint256 tokenId, bool verificationPassed) private {
+
         for (uint i = 0; i < verificationVotes[tokenId].length; i++) {
             address voter = verificationVotes[tokenId][i].voter;
             uint256 voterTokenId = addressToTokenId[voter];
             bool voteCorrect = (verificationVotes[tokenId][i].approved == verificationPassed);
             
             if (voteCorrect) {
+                // reputation max of 100
                 tokenIdToMediaHouses[voterTokenId].reputation = 
                     _min(100, tokenIdToMediaHouses[voterTokenId].reputation + REPUTATION_DELTA);
                 emit ReputationChanged(voterTokenId, int256(REPUTATION_DELTA));
@@ -123,7 +129,7 @@ contract MediaRegistry is ERC721("MediaHouseBadge", "MHB") {
                 emit ReputationChanged(voterTokenId, -int256(REPUTATION_DELTA));
             }
             
-            hasVoted[voter] = false;
+            hasVoted[voter][tokenId] = false;
         }
     }
 
