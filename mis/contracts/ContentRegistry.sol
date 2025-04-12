@@ -1,49 +1,64 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.0;
 
+import "./IUserRegistry.sol";
+
 contract ContentRegistry {
+    IUserRegistry public userRegistry;
+
     struct Content {
         uint256 id;
-        address author;
-        string data;
+        uint256 authorTokenId;
+        string dataHash;
+        int256 voteScore;
         bool flagged;
-        bool verified;
     }
 
     Content[] public contents;
-    mapping(address => uint256) public reputation;
-    mapping(uint256 => mapping(address => int8)) public votes; // 1 for upvote, -1 for downvote
+    mapping(uint256 => mapping(uint256 => bool)) public votes; // tokenId => contentId => voted
+    mapping(uint256 => uint256[]) public upvoters; // contentId => tokenIds
+    mapping(uint256 => uint256[]) public downvoters;
 
-    modifier onlyRegistered() {
-        require(reputation[msg.sender] > 0, "Not registered");
-        _;
+    event ContentSubmitted(uint256 indexed id, uint256 authorTokenId);
+    event ContentVoted(uint256 indexed id, uint256 voterTokenId, bool isUpvote);
+
+    constructor(address _userRegistry) {
+        userRegistry = IUserRegistry(_userRegistry); 
     }
 
-    function registerUser() external {
-        require(reputation[msg.sender] == 0, "Already registered");
-        reputation[msg.sender] = 50; // Default reputation
+    function submitContent(string memory dataHash) external {
+        uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
+        uint256 id = contents.length;
+        contents.push(Content(id, tokenId, dataHash, 0, false));
+        userRegistry.adjustReputation(tokenId, 1); // Small reward for contributing
+        emit ContentSubmitted(id, tokenId);
     }
 
-    function submitContent(string memory data) external onlyRegistered {
-        contents.push(Content(contents.length, msg.sender, data, false, false));
-    }
+    function voteContent(uint256 contentId, bool isUpvote) external {
+        uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
+        require(!votes[tokenId][contentId], "Already voted");
 
-    function flagContent(uint256 contentId) external onlyRegistered {
-        require(contentId < contents.length, "Invalid ID");
-        contents[contentId].flagged = true;
-    }
+        Content storage content = contents[contentId];
+        content.voteScore += isUpvote ? int256(1) : int256(-1);
+        votes[tokenId][contentId] = true;
 
-    // Internal function to adjust reputation
-    function _adjustReputation(address user, int256 delta) internal {
-        if (delta >= 0) {
-            reputation[user] += uint256(delta);
+        if (isUpvote) {
+            upvoters[contentId].push(tokenId);
         } else {
-            uint256 absDelta = uint256(-delta);
-            if (reputation[user] > absDelta) {
-                reputation[user] -= absDelta;
-            } else {
-                reputation[user] = 0;
+            downvoters[contentId].push(tokenId);
+            if (content.voteScore <= -5 && !content.flagged) {
+                content.flagged = true;
             }
         }
+
+        emit ContentVoted(contentId, tokenId, isUpvote);
+    }
+
+    function getUpvoters(uint256 contentId) external view returns (uint256[] memory) {
+        return upvoters[contentId];
+    }
+
+    function getDownvoters(uint256 contentId) external view returns (uint256[] memory) {
+        return downvoters[contentId];
     }
 }

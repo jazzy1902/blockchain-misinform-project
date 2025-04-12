@@ -1,0 +1,274 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+interface IUserRegistry {
+    struct User {
+        uint256 tokenId;
+        uint256 reputation;
+        uint256 contentCount;
+    }
+    
+    function getUser(address account) external view returns (User memory);
+    function getUserCount() external view returns (uint256);
+    function getAllTokenIds() external view returns (uint256[] memory);
+    function adjustReputation(uint256 tokenId, int256 change) external;
+    // function mintToken(address to) external returns (uint256);
+    function ownerOf(uint256 tokenId) external view returns (address);
+}
+
+
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+
+contract UserRegistry is ERC721 {
+    struct User {
+        uint256 reputation;
+        uint256 contentCount;
+    }
+
+    mapping(uint256 => User) public users;
+    mapping(address => uint256) public addressToTokenId;
+    uint256 private _tokenCounter = 0;
+    address public contentRegistry;
+    address public moderation;
+    uint256[] public allTokenIds;
+
+    event ReputationAdjusted(uint256 tokenId, int256 change);
+
+    constructor() ERC721("UserToken", "UTKN") {}
+
+    modifier onlyApproved() {
+        require(msg.sender == contentRegistry || msg.sender == moderation, "Unauthorized");
+        _;
+    }
+
+    function register() external returns (uint256) {
+        require(balanceOf(msg.sender) == 0, "Already registered");
+        uint256 tokenId = _tokenCounter++;
+        _mint(msg.sender, tokenId);
+        addressToTokenId[msg.sender] = tokenId;
+        users[tokenId] = User(0, 0); // 0 initial reputation
+        allTokenIds.push(tokenId);
+        return tokenId;
+    }
+
+    function getUser(address userAddr) external view returns (User memory, uint256) {
+        uint256 tokenId = addressToTokenId[userAddr];
+        return (users[tokenId], tokenId);
+    }
+
+    function adjustReputation(uint256 tokenId, int256 change) external onlyApproved {
+        if (change > 0) {
+            users[tokenId].reputation += uint256(change);
+        } else {
+            uint256 decrease = uint256(-change);
+            users[tokenId].reputation = decrease > users[tokenId].reputation ? 0 : users[tokenId].reputation - decrease;
+        }
+        emit ReputationAdjusted(tokenId, change);
+    }
+
+    function setApprovedContracts(address _content, address _moderation) external {
+        require(contentRegistry == address(0), "Already set");
+        contentRegistry = _content;
+        moderation = _moderation;
+    }
+
+    function getUserCount() external view returns(uint256) {
+        return (_tokenCounter);
+    }
+
+    function getAllTokenIds() external view returns (uint256[] memory) {
+        return allTokenIds;
+    }
+
+}
+
+
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+import "./IUserRegistry.sol";
+
+contract ContentRegistry {
+    IUserRegistry public userRegistry;
+
+    struct Content {
+        uint256 id;
+        uint256 authorTokenId;
+        string dataHash;
+        int256 voteScore;
+        bool flagged;
+    }
+
+    Content[] public contents;
+    mapping(uint256 => mapping(uint256 => bool)) public votes; // tokenId => contentId => voted
+    mapping(uint256 => uint256[]) public upvoters; // contentId => tokenIds
+    mapping(uint256 => uint256[]) public downvoters;
+
+    event ContentSubmitted(uint256 indexed id, uint256 authorTokenId);
+    event ContentVoted(uint256 indexed id, uint256 voterTokenId, bool isUpvote);
+
+    constructor(address _userRegistry) {
+        userRegistry = IUserRegistry(_userRegistry); 
+    }
+
+    function submitContent(string memory dataHash) external {
+        uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
+        uint256 id = contents.length;
+        contents.push(Content(id, tokenId, dataHash, 0, false));
+        userRegistry.adjustReputation(tokenId, 1); // Small reward for contributing
+        emit ContentSubmitted(id, tokenId);
+    }
+
+    function voteContent(uint256 contentId, bool isUpvote) external {
+        uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
+        require(!votes[tokenId][contentId], "Already voted");
+
+        Content storage content = contents[contentId];
+        content.voteScore += isUpvote ? int256(1) : int256(-1);
+        votes[tokenId][contentId] = true;
+
+        if (isUpvote) {
+            upvoters[contentId].push(tokenId);
+        } else {
+            downvoters[contentId].push(tokenId);
+            if (content.voteScore <= -5 && !content.flagged) {
+                content.flagged = true;
+            }
+        }
+
+        emit ContentVoted(contentId, tokenId, isUpvote);
+    }
+
+    function getUpvoters(uint256 contentId) external view returns (uint256[] memory) {
+        return upvoters[contentId];
+    }
+
+    function getDownvoters(uint256 contentId) external view returns (uint256[] memory) {
+        return downvoters[contentId];
+    }
+}
+
+
+
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+import "./IUserRegistry.sol";
+import "./ContentRegistry.sol";
+
+contract Moderation {
+    IUserRegistry public userRegistry;
+    ContentRegistry public contentRegistry;
+
+    struct ModerationVote {
+        uint256 tokenId;
+        bool isCorrect; // whether content should be flagged or not
+    }
+
+    mapping(uint256 => ModerationVote[]) public moderationVotes;
+    uint256 public constant MIN_REP = 100;
+    uint256 public constant MOD_THRESHOLD = 40;
+
+    constructor(address _userRegistry, address _contentRegistry) {
+        userRegistry = IUserRegistry(_userRegistry);
+        contentRegistry = ContentRegistry(_contentRegistry);
+    }
+
+    function getTop50PercentUsers() public view returns (uint256[] memory) {
+        uint256[] memory tokenIds = userRegistry.getAllTokenIds();
+        uint256 total = tokenIds.length;
+
+        require(total > 0, "No users");
+
+        uint256[] memory reputations = new uint256[](total);
+        uint256 sum = 0;
+
+        for (uint i = 0; i < total; i++) {
+            uint256 rep = userRegistry.getUser(msg.sender).reputation;
+            reputations[i] = rep;
+            sum += rep;
+        }
+
+        uint256 avg = sum / total;
+
+        uint256 count = 0;
+        for (uint i = 0; i < total; i++) {
+            if (reputations[i] >= avg) count++;
+        }
+
+        uint256[] memory topUsers = new uint256[](count);
+        uint256 idx = 0;
+        for (uint i = 0; i < total; i++) {
+            if (reputations[i] >= avg) {
+                topUsers[idx++] = tokenIds[i];
+            }
+        }
+
+        return topUsers;
+    }
+
+
+    function moderateContent(uint256 contentId, bool isCorrect) external {
+        uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
+        uint256[] memory topModerators = getTop50PercentUsers();
+        (,,,,bool flagged) = contentRegistry.contents(contentId);
+        require(userRegistry.getUser(msg.sender).reputation >= MIN_REP, "Low rep");
+        require(flagged, "Not flagged");
+
+        bool isTop = false;
+        for (uint i = 0; i < topModerators.length; i++) {
+            if (topModerators[i] == tokenId) {
+                isTop = true;
+                break;
+            }
+        }
+        require(isTop, "Not in top 50% reputed users.");
+
+        // Check duplicate votes
+        for (uint i = 0; i < moderationVotes[contentId].length; i++) {
+            require(moderationVotes[contentId][i].tokenId != tokenId, "Already voted");
+        }
+
+        moderationVotes[contentId].push(ModerationVote(tokenId, isCorrect));
+
+        if (moderationVotes[contentId].length >= topModerators.length / 2) {
+            _finalizeModeration(contentId);
+        }
+    }
+
+    function _finalizeModeration(uint256 contentId) private {
+        uint256 correctVotes;
+        ModerationVote[] storage votes = moderationVotes[contentId];
+        
+        for (uint i = 0; i < votes.length; i++) {
+            if (votes[i].isCorrect) correctVotes++;
+        }
+
+        bool verdict = correctVotes >= 2;
+        _updateReputations(contentId, verdict);
+    }
+
+    function _updateReputations(uint256 contentId, bool isCorrect) private {
+        // Update voters
+        uint256[] memory ups = contentRegistry.getUpvoters(contentId);
+        uint256[] memory downs = contentRegistry.getDownvoters(contentId);
+
+        for (uint i = 0; i < ups.length; i++) {
+            userRegistry.adjustReputation(ups[i], isCorrect ? 5 : -3);
+        }
+
+        for (uint i = 0; i < downs.length; i++) {
+            userRegistry.adjustReputation(downs[i], isCorrect ? -3 : 5);
+        }
+
+        // Update moderators
+        ModerationVote[] storage votes = moderationVotes[contentId];
+        for (uint i = 0; i < votes.length; i++) {
+            bool votedCorrectly = votes[i].isCorrect == isCorrect;
+            userRegistry.adjustReputation(votes[i].tokenId, votedCorrectly ? 10 : -5);
+        }
+    }
+}
