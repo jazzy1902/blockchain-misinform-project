@@ -1,0 +1,199 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+interface IUserRegistry {
+    struct User {
+        uint256 tokenId;
+        uint256 reputation;
+        uint256 contentCount;
+    }
+    
+    function getUser(address account) external view returns (User memory);
+    function getUserCount() external view returns (uint256);
+    function getAllTokenIds() external view returns (uint256[] memory);
+    function adjustReputation(uint256 tokenId, int256 change) external;
+    // function mintToken(address to) external returns (uint256);
+    function ownerOf(uint256 tokenId) external view returns (address);
+}
+
+
+
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "./IUserRegistry.sol";
+
+contract UserRegistry is ERC721 {
+    struct User {
+        uint256 reputation;
+        uint256 contentCount;
+        uint256 ethDeposit;
+    }
+
+    mapping(uint256 => User) public users;
+    mapping(address => uint256) public addressToTokenId;
+    uint256 private _tokenCounter = 0;
+    address public contentRegistry;
+    address public moderation;
+    uint256[] public allTokenIds;
+
+    event ReputationAdjusted(uint256 tokenId, int256 change);
+    event DepositMade(uint256 tokenId, uint256 amount);
+    event WithdrawalMade(uint256 tokenId, uint256 amount);
+    event PenaltyApplied(uint256 tokenId, uint256 amount);
+
+    constructor() ERC721("UserToken", "UTKN") {}
+
+    modifier onlyApproved() {
+        require(msg.sender == contentRegistry || msg.sender == moderation, "Unauthorized");
+        _;
+    }
+
+    function register() external payable returns (uint256) {
+        require(balanceOf(msg.sender) == 0, "Already registered");
+        require(msg.value >= 0.01 ether, "Minimum 0.01 ETH deposit required");
+        
+        uint256 tokenId = _tokenCounter++;
+        _mint(msg.sender, tokenId);
+        addressToTokenId[msg.sender] = tokenId;
+        users[tokenId] = User(0, 0, msg.value);
+        allTokenIds.push(tokenId);
+        
+        emit DepositMade(tokenId, msg.value);
+        return tokenId;
+    }
+
+    function depositETH(uint256 tokenId) external payable {
+        require(ownerOf(tokenId) == msg.sender, "Not token owner");
+        users[tokenId].ethDeposit += msg.value;
+        emit DepositMade(tokenId, msg.value);
+    }
+
+    function withdrawETH(uint256 tokenId, uint256 amount) external {
+        require(ownerOf(tokenId) == msg.sender, "Not token owner");
+        require(users[tokenId].ethDeposit >= amount, "Insufficient balance");
+        
+        users[tokenId].ethDeposit -= amount;
+        payable(msg.sender).transfer(amount);
+        emit WithdrawalMade(tokenId, amount);
+    }
+
+    function applyPenalty(uint256 tokenId, uint256 amount) external onlyApproved {
+        require(users[tokenId].ethDeposit >= amount, "Insufficient balance for penalty");
+        users[tokenId].ethDeposit -= amount;
+        emit PenaltyApplied(tokenId, amount);
+    }
+
+    function getUser(address userAddr) external view returns (User memory, uint256) {
+        uint256 tokenId = addressToTokenId[userAddr];
+        require(balanceOf(userAddr) > 0, "User not registered");
+        return (users[tokenId], tokenId);
+    }
+
+    function adjustReputation(uint256 tokenId, int256 change) external onlyApproved {
+        if (change > 0) {
+            users[tokenId].reputation += uint256(change);
+        } else {
+            uint256 decrease = uint256(-change);
+            users[tokenId].reputation = decrease > users[tokenId].reputation ? 0 : users[tokenId].reputation - decrease;
+        }
+        emit ReputationAdjusted(tokenId, change);
+    }
+
+    function setApprovedContracts(address _content, address _moderation) external {
+        require(contentRegistry == address(0), "Already set");
+        contentRegistry = _content;
+        moderation = _moderation;
+    }
+
+    function getUserCount() external view returns(uint256) {
+        return (_tokenCounter);
+    }
+
+    function getAllTokenIds() external view returns (uint256[] memory) {
+        return allTokenIds;
+    }
+
+}
+
+
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+import "./IUserRegistry.sol";
+
+contract ContentRegistry {
+    IUserRegistry public userRegistry;
+
+    struct Content {
+        uint256 id;
+        uint256 authorTokenId;
+        string dataHash;
+        int256 voteScore;
+        bool flagged;
+        uint256 creationTime;
+    }
+
+    Content[] public contents;
+    mapping(uint256 => mapping(uint256 => bool)) public votes;
+    mapping(uint256 => uint256[]) public upvoters;
+    mapping(uint256 => uint256[]) public downvoters;
+    
+    event ContentRewarded(uint256 indexed id, uint256 amount);
+    event VoteRewarded(uint256 indexed contentId, uint256 voterTokenId, uint256 amount);
+    event ContentSubmitted(uint256 indexed id, uint256 authorTokenId);
+    event ContentVoted(uint256 indexed id, uint256 voterTokenId, bool isUpvote);
+
+    constructor(address _userRegistry) {
+        userRegistry = IUserRegistry(_userRegistry); 
+    }
+
+    function submitContent(string memory dataHash) external payable {
+        require(msg.value >= 0.005 ether, "Submission requires 0.005 ETH deposit");
+        
+        uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
+        uint256 id = contents.length;
+        contents.push(Content(id, tokenId, dataHash, 0, false, block.timestamp));
+        userRegistry.adjustReputation(tokenId, 1);
+        
+        // Lock ETH deposit with content
+        payable(address(userRegistry)).transfer(msg.value);
+        emit ContentSubmitted(id, tokenId);
+    }
+
+    function voteContent(uint256 contentId, bool isUpvote) external payable {
+        require(msg.value >= 0.001 ether, "Voting requires 0.001 ETH deposit");
+        
+        uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
+        require(!votes[tokenId][contentId], "Already voted");
+
+        Content storage content = contents[contentId];
+        content.voteScore += isUpvote ? int256(1) : int256(-1);
+        votes[tokenId][contentId] = true;
+
+        if (isUpvote) {
+            upvoters[contentId].push(tokenId);
+        } else {
+            downvoters[contentId].push(tokenId);
+            if (content.voteScore <= -5 && !content.flagged) {
+                content.flagged = true;
+            }
+        }
+
+        // Lock voting deposit
+        payable(address(userRegistry)).transfer(msg.value);
+        emit VoteRewarded(contentId, tokenId, msg.value);
+        emit ContentVoted(contentId, tokenId, isUpvote);
+    }
+
+    function getUpvoters(uint256 contentId) external view returns (uint256[] memory) {
+        return upvoters[contentId];
+    }
+
+    function getDownvoters(uint256 contentId) external view returns (uint256[] memory) {
+        return downvoters[contentId];
+    }
+}
+
+
