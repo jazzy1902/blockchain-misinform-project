@@ -6,6 +6,43 @@ const cors = require('cors');
 const app = express();
 const PORT = 3001;
 
+const fs = require('fs').promises;
+const path = require('path');
+
+async function appendToJsonFile(data, filePath = 'responses.json') {
+    try {
+        const absolutePath = path.resolve(filePath);
+        let allResponses = [];
+
+        // Check if file exists and read existing data
+        try {
+            const fileContent = await fs.readFile(absolutePath, 'utf8');
+            allResponses = JSON.parse(fileContent);
+            
+            // Ensure allResponses is an array
+            if (!Array.isArray(allResponses)) {
+                allResponses = [allResponses];
+            }
+        } catch (error) {
+            // File doesn't exist or is empty/corrupted
+            allResponses = [];
+        }
+
+        // Append new data
+        allResponses.push(data);
+
+        // Write updated data back to file
+        await fs.writeFile(absolutePath, JSON.stringify(allResponses, null, 2));
+        
+        return true;
+    } catch (error) {
+        console.error('Error appending to JSON file:', error);
+        throw error;
+    }
+}
+
+
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -54,6 +91,12 @@ app.post('/api/submit', async (req, res) => {
         maxBodyLength: Infinity
       }
     );
+
+    // console.log('Pinata response:', pinataResponse.data);
+    await appendToJsonFile({
+      cid: pinataResponse.data.IpfsHash,
+      userId: userId,
+    }, 'responses.json');
 
     res.json({
       success: true,
