@@ -12,6 +12,7 @@ interface IUserRegistry {
     function getUserCount() external view returns (uint256);
     function getAllTokenIds() external view returns (uint256[] memory);
     function adjustReputation(uint256 tokenId, int256 change) external;
+    function applyPenalty(uint256 tokenId, uint256 amount) external;
     // function mintToken(address to) external returns (uint256);
     function ownerOf(uint256 tokenId) external view returns (address);
 }

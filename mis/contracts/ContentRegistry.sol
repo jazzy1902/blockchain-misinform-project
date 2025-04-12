@@ -12,13 +12,16 @@ contract ContentRegistry {
         string dataHash;
         int256 voteScore;
         bool flagged;
+        uint256 creationTime;
     }
 
     Content[] public contents;
-    mapping(uint256 => mapping(uint256 => bool)) public votes; // tokenId => contentId => voted
-    mapping(uint256 => uint256[]) public upvoters; // contentId => tokenIds
+    mapping(uint256 => mapping(uint256 => bool)) public votes;
+    mapping(uint256 => uint256[]) public upvoters;
     mapping(uint256 => uint256[]) public downvoters;
-
+    
+    event ContentRewarded(uint256 indexed id, uint256 amount);
+    event VoteRewarded(uint256 indexed contentId, uint256 voterTokenId, uint256 amount);
     event ContentSubmitted(uint256 indexed id, uint256 authorTokenId);
     event ContentVoted(uint256 indexed id, uint256 voterTokenId, bool isUpvote);
 
@@ -26,15 +29,22 @@ contract ContentRegistry {
         userRegistry = IUserRegistry(_userRegistry); 
     }
 
-    function submitContent(string memory dataHash) external {
+    function submitContent(string memory dataHash) external payable {
+        require(msg.value >= 0.005 ether, "Submission requires 0.005 ETH deposit");
+        
         uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
         uint256 id = contents.length;
-        contents.push(Content(id, tokenId, dataHash, 0, false));
-        userRegistry.adjustReputation(tokenId, 1); // Small reward for contributing
+        contents.push(Content(id, tokenId, dataHash, 0, false, block.timestamp));
+        userRegistry.adjustReputation(tokenId, 1);
+        
+        // Lock ETH deposit with content
+        payable(address(userRegistry)).transfer(msg.value);
         emit ContentSubmitted(id, tokenId);
     }
 
-    function voteContent(uint256 contentId, bool isUpvote) external {
+    function voteContent(uint256 contentId, bool isUpvote) external payable {
+        require(msg.value >= 0.001 ether, "Voting requires 0.001 ETH deposit");
+        
         uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
         require(!votes[tokenId][contentId], "Already voted");
 
@@ -51,6 +61,9 @@ contract ContentRegistry {
             }
         }
 
+        // Lock voting deposit
+        payable(address(userRegistry)).transfer(msg.value);
+        emit VoteRewarded(contentId, tokenId, msg.value);
         emit ContentVoted(contentId, tokenId, isUpvote);
     }
 

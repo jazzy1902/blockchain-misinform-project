@@ -17,15 +17,18 @@ interface IUserRegistry {
 }
 
 
+
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "./IUserRegistry.sol";
 
 contract UserRegistry is ERC721 {
     struct User {
         uint256 reputation;
         uint256 contentCount;
+        uint256 ethDeposit;
     }
 
     mapping(uint256 => User) public users;
@@ -36,6 +39,9 @@ contract UserRegistry is ERC721 {
     uint256[] public allTokenIds;
 
     event ReputationAdjusted(uint256 tokenId, int256 change);
+    event DepositMade(uint256 tokenId, uint256 amount);
+    event WithdrawalMade(uint256 tokenId, uint256 amount);
+    event PenaltyApplied(uint256 tokenId, uint256 amount);
 
     constructor() ERC721("UserToken", "UTKN") {}
 
@@ -44,18 +50,44 @@ contract UserRegistry is ERC721 {
         _;
     }
 
-    function register() external returns (uint256) {
+    function register() external payable returns (uint256) {
         require(balanceOf(msg.sender) == 0, "Already registered");
+        require(msg.value >= 0.01 ether, "Minimum 0.01 ETH deposit required");
+        
         uint256 tokenId = _tokenCounter++;
         _mint(msg.sender, tokenId);
         addressToTokenId[msg.sender] = tokenId;
-        users[tokenId] = User(0, 0); // 0 initial reputation
+        users[tokenId] = User(0, 0, msg.value);
         allTokenIds.push(tokenId);
+        
+        emit DepositMade(tokenId, msg.value);
         return tokenId;
+    }
+
+    function depositETH(uint256 tokenId) external payable {
+        require(ownerOf(tokenId) == msg.sender, "Not token owner");
+        users[tokenId].ethDeposit += msg.value;
+        emit DepositMade(tokenId, msg.value);
+    }
+
+    function withdrawETH(uint256 tokenId, uint256 amount) external {
+        require(ownerOf(tokenId) == msg.sender, "Not token owner");
+        require(users[tokenId].ethDeposit >= amount, "Insufficient balance");
+        
+        users[tokenId].ethDeposit -= amount;
+        payable(msg.sender).transfer(amount);
+        emit WithdrawalMade(tokenId, amount);
+    }
+
+    function applyPenalty(uint256 tokenId, uint256 amount) external onlyApproved {
+        require(users[tokenId].ethDeposit >= amount, "Insufficient balance for penalty");
+        users[tokenId].ethDeposit -= amount;
+        emit PenaltyApplied(tokenId, amount);
     }
 
     function getUser(address userAddr) external view returns (User memory, uint256) {
         uint256 tokenId = addressToTokenId[userAddr];
+        require(balanceOf(userAddr) > 0, "User not registered");
         return (users[tokenId], tokenId);
     }
 
@@ -100,13 +132,16 @@ contract ContentRegistry {
         string dataHash;
         int256 voteScore;
         bool flagged;
+        uint256 creationTime;
     }
 
     Content[] public contents;
-    mapping(uint256 => mapping(uint256 => bool)) public votes; // tokenId => contentId => voted
-    mapping(uint256 => uint256[]) public upvoters; // contentId => tokenIds
+    mapping(uint256 => mapping(uint256 => bool)) public votes;
+    mapping(uint256 => uint256[]) public upvoters;
     mapping(uint256 => uint256[]) public downvoters;
-
+    
+    event ContentRewarded(uint256 indexed id, uint256 amount);
+    event VoteRewarded(uint256 indexed contentId, uint256 voterTokenId, uint256 amount);
     event ContentSubmitted(uint256 indexed id, uint256 authorTokenId);
     event ContentVoted(uint256 indexed id, uint256 voterTokenId, bool isUpvote);
 
@@ -114,15 +149,22 @@ contract ContentRegistry {
         userRegistry = IUserRegistry(_userRegistry); 
     }
 
-    function submitContent(string memory dataHash) external {
+    function submitContent(string memory dataHash) external payable {
+        require(msg.value >= 0.005 ether, "Submission requires 0.005 ETH deposit");
+        
         uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
         uint256 id = contents.length;
-        contents.push(Content(id, tokenId, dataHash, 0, false));
-        userRegistry.adjustReputation(tokenId, 1); // Small reward for contributing
+        contents.push(Content(id, tokenId, dataHash, 0, false, block.timestamp));
+        userRegistry.adjustReputation(tokenId, 1);
+        
+        // Lock ETH deposit with content
+        payable(address(userRegistry)).transfer(msg.value);
         emit ContentSubmitted(id, tokenId);
     }
 
-    function voteContent(uint256 contentId, bool isUpvote) external {
+    function voteContent(uint256 contentId, bool isUpvote) external payable {
+        require(msg.value >= 0.001 ether, "Voting requires 0.001 ETH deposit");
+        
         uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
         require(!votes[tokenId][contentId], "Already voted");
 
@@ -139,6 +181,9 @@ contract ContentRegistry {
             }
         }
 
+        // Lock voting deposit
+        payable(address(userRegistry)).transfer(msg.value);
+        emit VoteRewarded(contentId, tokenId, msg.value);
         emit ContentVoted(contentId, tokenId, isUpvote);
     }
 
@@ -152,123 +197,3 @@ contract ContentRegistry {
 }
 
 
-
-// SPDX-License-Identifier: GPL-3.0
-pragma solidity ^0.8.0;
-
-import "./IUserRegistry.sol";
-import "./ContentRegistry.sol";
-
-contract Moderation {
-    IUserRegistry public userRegistry;
-    ContentRegistry public contentRegistry;
-
-    struct ModerationVote {
-        uint256 tokenId;
-        bool isCorrect; // whether content should be flagged or not
-    }
-
-    mapping(uint256 => ModerationVote[]) public moderationVotes;
-    uint256 public constant MIN_REP = 100;
-    uint256 public constant MOD_THRESHOLD = 40;
-
-    constructor(address _userRegistry, address _contentRegistry) {
-        userRegistry = IUserRegistry(_userRegistry);
-        contentRegistry = ContentRegistry(_contentRegistry);
-    }
-
-    function getTop50PercentUsers() public view returns (uint256[] memory) {
-        uint256[] memory tokenIds = userRegistry.getAllTokenIds();
-        uint256 total = tokenIds.length;
-
-        require(total > 0, "No users");
-
-        uint256[] memory reputations = new uint256[](total);
-        uint256 sum = 0;
-
-        for (uint i = 0; i < total; i++) {
-            uint256 rep = userRegistry.getUser(msg.sender).reputation;
-            reputations[i] = rep;
-            sum += rep;
-        }
-
-        uint256 avg = sum / total;
-
-        uint256 count = 0;
-        for (uint i = 0; i < total; i++) {
-            if (reputations[i] >= avg) count++;
-        }
-
-        uint256[] memory topUsers = new uint256[](count);
-        uint256 idx = 0;
-        for (uint i = 0; i < total; i++) {
-            if (reputations[i] >= avg) {
-                topUsers[idx++] = tokenIds[i];
-            }
-        }
-
-        return topUsers;
-    }
-
-
-    function moderateContent(uint256 contentId, bool isCorrect) external {
-        uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
-        uint256[] memory topModerators = getTop50PercentUsers();
-        (,,,,bool flagged) = contentRegistry.contents(contentId);
-        require(userRegistry.getUser(msg.sender).reputation >= MIN_REP, "Low rep");
-        require(flagged, "Not flagged");
-
-        bool isTop = false;
-        for (uint i = 0; i < topModerators.length; i++) {
-            if (topModerators[i] == tokenId) {
-                isTop = true;
-                break;
-            }
-        }
-        require(isTop, "Not in top 50% reputed users.");
-
-        // Check duplicate votes
-        for (uint i = 0; i < moderationVotes[contentId].length; i++) {
-            require(moderationVotes[contentId][i].tokenId != tokenId, "Already voted");
-        }
-
-        moderationVotes[contentId].push(ModerationVote(tokenId, isCorrect));
-
-        if (moderationVotes[contentId].length >= topModerators.length / 2) {
-            _finalizeModeration(contentId);
-        }
-    }
-
-    function _finalizeModeration(uint256 contentId) private {
-        uint256 correctVotes;
-        ModerationVote[] storage votes = moderationVotes[contentId];
-        
-        for (uint i = 0; i < votes.length; i++) {
-            if (votes[i].isCorrect) correctVotes++;
-        }
-
-        bool verdict = correctVotes >= 2;
-        _updateReputations(contentId, verdict);
-    }
-
-    function _updateReputations(uint256 contentId, bool isCorrect) private {
-        // Update voters
-        uint256[] memory ups = contentRegistry.getUpvoters(contentId);
-        uint256[] memory downs = contentRegistry.getDownvoters(contentId);
-
-        for (uint i = 0; i < ups.length; i++) {
-            userRegistry.adjustReputation(ups[i], isCorrect ? 5 : -3);
-        }
-
-        for (uint i = 0; i < downs.length; i++) {
-            userRegistry.adjustReputation(downs[i], isCorrect ? -3 : 5);
-        }
-
-        // Update moderators
-        ModerationVote[] storage votes = moderationVotes[contentId];
-        for (uint i = 0; i < votes.length; i++) {
-            bool votedCorrectly = votes[i].isCorrect == isCorrect;
-            userRegistry.adjustReputation(votes[i].tokenId, votedCorrectly ? 10 : -5);
-        }
-    }
-}

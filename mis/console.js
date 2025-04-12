@@ -1,24 +1,9 @@
 const UserRegistry = artifacts.require("UserRegistry");
 const ContentRegistry = artifacts.require("ContentRegistry");
 const Moderation = artifacts.require("Moderation");
-const { create } = require("ipfs-http-client");
 
 module.exports = async function (callback) {
   try {
-    console.log("Starting console script for Misinformation Blockchain Project with local IPFS...\n");
-
-    // Initialize IPFS client for local node
-    console.log("Connecting to local IPFS node...");
-    let ipfs;
-    try {
-      ipfs = await create({ host: "127.0.0.1", port: 5001, protocol: "http" });
-      console.log("Connected to local IPFS node at http://127.0.0.1:5001");
-    } catch (error) {
-      throw new Error(
-        "Failed to connect to local IPFS node. Ensure `ipfs daemon` is running (run `ipfs daemon` in a terminal)."
-      );
-    }
-
     // Get accounts from Ganache
     const accounts = await web3.eth.getAccounts();
     const deployer = accounts[0];
@@ -111,11 +96,11 @@ module.exports = async function (callback) {
     console.log("Uploading content to IPFS:", content);
 
     // Upload to IPFS
-    const contentBuffer = Buffer.from(JSON.stringify(content));
-    const ipfsResult = await ipfs.add(contentBuffer);
-    const dataHash = ipfsResult.cid.toString();
-    console.log(`Content uploaded to IPFS with CID: ${dataHash}`);
-
+    // console.log('Uploading file to IPFS...');
+    // const cid = await uploadToIPFS(content, (progress) => {
+    //   console.log(`Upload progress: ${(progress * 100).toFixed(2)}%`);
+    // });
+    const dataHash = "12evgjft12f"
     // Submit content to blockchain
     console.log(`User1 submitting content with IPFS CID: ${dataHash}`);
     tx = await contentRegistry.submitContent(dataHash, { from: user1 });
@@ -128,9 +113,9 @@ module.exports = async function (callback) {
 
     // Test 3: Voting on content
     console.log("=== Test 3: Voting on Content ===");
-    console.log(`User2 upvoting content ID ${contentId}...`);
+    console.log(`User2 upvoting ${userRegistry.getUser(user2).tokenId} content ID ${contentId}...`);
     await contentRegistry.voteContent(contentId, true, { from: user2 });
-    console.log(`User3 downvoting content ID ${contentId}...`);
+    console.log(`User3 downvoting ${user3.tokenId} content ID ${contentId}...`);
     await contentRegistry.voteContent(contentId, false, { from: user3 });
 
     // Check content vote score

@@ -10,16 +10,83 @@ contract Moderation {
 
     struct ModerationVote {
         uint256 tokenId;
-        bool isCorrect; // whether content should be flagged or not
+        bool isCorrect;
     }
 
     mapping(uint256 => ModerationVote[]) public moderationVotes;
     uint256 public constant MIN_REP = 100;
     uint256 public constant MOD_THRESHOLD = 40;
+    
+    // New events
+    event ModerationRewarded(uint256 indexed contentId, uint256 moderatorTokenId, uint256 amount);
+    event ModerationPenalized(uint256 indexed contentId, uint256 moderatorTokenId, uint256 amount);
 
     constructor(address _userRegistry, address _contentRegistry) {
         userRegistry = IUserRegistry(_userRegistry);
         contentRegistry = ContentRegistry(_contentRegistry);
+    }
+
+    function moderateContent(uint256 contentId, bool isCorrect) external payable {
+        require(msg.value >= 0.01 ether, "Moderation requires 0.01 ETH deposit");
+        
+        uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
+        uint256[] memory topModerators = getTop50PercentUsers();
+        (,,,,bool flagged,) = contentRegistry.contents(contentId);
+        require(userRegistry.getUser(msg.sender).reputation >= MIN_REP, "Low rep");
+        require(flagged, "Not flagged");
+
+        bool isTop = false;
+        for (uint i = 0; i < topModerators.length; i++) {
+            if (topModerators[i] == tokenId) {
+                isTop = true;
+                break;
+            }
+        }
+        require(isTop, "Not in top 50% reputed users");
+
+        for (uint i = 0; i < moderationVotes[contentId].length; i++) {
+            require(moderationVotes[contentId][i].tokenId != tokenId, "Already voted");
+        }
+
+        moderationVotes[contentId].push(ModerationVote(tokenId, isCorrect));
+        payable(address(userRegistry)).transfer(msg.value);
+
+        if (moderationVotes[contentId].length >= topModerators.length / 2) {
+            _finalizeModeration(contentId);
+        }
+    }
+
+    function _finalizeModeration(uint256 contentId) private {
+        uint256 correctVotes;
+        ModerationVote[] storage votes = moderationVotes[contentId];
+        
+        for (uint i = 0; i < votes.length; i++) {
+            if (votes[i].isCorrect) correctVotes++;
+        }
+
+        bool verdict = correctVotes >= votes.length / 2;
+        _updateReputations(contentId, verdict);
+        _distributeFunds(contentId, verdict);
+    }
+
+    function _distributeFunds(uint256 contentId, bool isCorrect) private {
+        uint256 totalPool = address(this).balance;
+        
+        // Reward moderators (50% of pool)
+        ModerationVote[] storage votes = moderationVotes[contentId];
+        uint256 modRewardPerVoter = totalPool * 50 / 100 / votes.length;
+        
+        for (uint i = 0; i < votes.length; i++) {
+            bool votedCorrectly = votes[i].isCorrect == isCorrect;
+            if (votedCorrectly) {
+                payable(userRegistry.ownerOf(votes[i].tokenId)).transfer(modRewardPerVoter);
+                emit ModerationRewarded(contentId, votes[i].tokenId, modRewardPerVoter);
+            } else {
+                userRegistry.applyPenalty(votes[i].tokenId, modRewardPerVoter);
+                emit ModerationPenalized(contentId, votes[i].tokenId, modRewardPerVoter);
+            }
+        }
+        
     }
 
     function getTop50PercentUsers() public view returns (uint256[] memory) {
@@ -53,47 +120,6 @@ contract Moderation {
         }
 
         return topUsers;
-    }
-
-
-    function moderateContent(uint256 contentId, bool isCorrect) external {
-        uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
-        uint256[] memory topModerators = getTop50PercentUsers();
-        (,,,,bool flagged) = contentRegistry.contents(contentId);
-        require(userRegistry.getUser(msg.sender).reputation >= MIN_REP, "Low rep");
-        require(flagged, "Not flagged");
-
-        bool isTop = false;
-        for (uint i = 0; i < topModerators.length; i++) {
-            if (topModerators[i] == tokenId) {
-                isTop = true;
-                break;
-            }
-        }
-        require(isTop, "Not in top 50% reputed users.");
-
-        // Check duplicate votes
-        for (uint i = 0; i < moderationVotes[contentId].length; i++) {
-            require(moderationVotes[contentId][i].tokenId != tokenId, "Already voted");
-        }
-
-        moderationVotes[contentId].push(ModerationVote(tokenId, isCorrect));
-
-        if (moderationVotes[contentId].length >= topModerators.length / 2) {
-            _finalizeModeration(contentId);
-        }
-    }
-
-    function _finalizeModeration(uint256 contentId) private {
-        uint256 correctVotes;
-        ModerationVote[] storage votes = moderationVotes[contentId];
-        
-        for (uint i = 0; i < votes.length; i++) {
-            if (votes[i].isCorrect) correctVotes++;
-        }
-
-        bool verdict = correctVotes >= 2;
-        _updateReputations(contentId, verdict);
     }
 
     function _updateReputations(uint256 contentId, bool isCorrect) private {
