@@ -42,6 +42,17 @@ async function appendToJsonFile(data, filePath = 'responses.json') {
     }
 }
 
+// Function to fetch content from IPFS via Pinata gateway
+async function fetchContentFromIPFS(cid) {
+  try {
+    const response = await axios.get(`https://gateway.pinata.cloud/ipfs/${cid}`);
+    return response.data;
+  } catch (error) {
+    console.error(`Failed to fetch content for CID ${cid}:`, error.message);
+    return null;
+  }
+}
+
 // Middleware setup
 app.use(cors());              // Enable CORS for all routes
 app.use(express.json());      // Parse incoming JSON request bodies
@@ -96,6 +107,10 @@ app.post('/api/submit', async (req, res) => {
     await appendToJsonFile({
       cid: pinataResponse.data.IpfsHash,
       userId: userId,
+      content: content,
+      createdAt: new Date().toISOString(),
+      upvotes: 0,
+      downvotes: 0
     }, 'responses.json');
 
     // Respond with success and the IPFS CID
@@ -111,6 +126,89 @@ app.post('/api/submit', async (req, res) => {
       success: false,
       error: 'Failed to upload to Pinata',
       details: error.response?.data || error.message
+    });
+  }
+});
+
+// Route to retrieve content data
+app.get('/api/content', async (req, res) => {
+  try {
+    const filePath = path.resolve('responses.json');
+    let contentData = [];
+    
+    try {
+      const fileContent = await fs.readFile(filePath, 'utf8');
+      contentData = JSON.parse(fileContent);
+      
+      // Add default values for each item and fetch content if needed
+      const contentPromises = contentData.map(async (item) => {
+        const result = {
+          ...item,
+          createdAt: item.createdAt || new Date().toISOString(),
+          upvotes: item.upvotes || 0,
+          downvotes: item.downvotes || 0
+        };
+        
+        // If content is not present, try to fetch it from IPFS
+        if (!item.content && item.cid) {
+          try {
+            const ipfsContent = await fetchContentFromIPFS(item.cid);
+            if (ipfsContent) {
+              result.content = ipfsContent;
+            } else {
+              result.content = 'Content unavailable';
+            }
+          } catch (err) {
+            console.error(`Error fetching content for CID ${item.cid}:`, err);
+            result.content = 'Error fetching content';
+          }
+        }
+        
+        return result;
+      });
+      
+      // Wait for all content fetch operations to complete
+      contentData = await Promise.all(contentPromises);
+      
+    } catch (error) {
+      console.log('Could not read responses.json, returning empty array', error);
+      // If file does not exist or is invalid, return empty array
+      contentData = [];
+    }
+    
+    res.json(contentData);
+  } catch (error) {
+    console.error('Error retrieving content data:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve content data',
+      details: error.message
+    });
+  }
+});
+
+// Route to get specific content by CID
+app.get('/api/content/:cid', async (req, res) => {
+  try {
+    const { cid } = req.params;
+    if (!cid) {
+      return res.status(400).json({ error: 'CID is required' });
+    }
+    
+    // Fetch content from IPFS
+    const content = await fetchContentFromIPFS(cid);
+    
+    if (!content) {
+      return res.status(404).json({ error: 'Content not found' });
+    }
+    
+    res.json({ cid, content });
+  } catch (error) {
+    console.error('Error retrieving specific content:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve content',
+      details: error.message
     });
   }
 });
