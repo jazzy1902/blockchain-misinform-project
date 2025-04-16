@@ -22,6 +22,7 @@ contract UserRegistry is ERC721 {
     event DepositMade(uint256 tokenId, uint256 amount);
     event WithdrawalMade(uint256 tokenId, uint256 amount);
     event PenaltyApplied(uint256 tokenId, uint256 amount);
+    event UserRegistered(uint256 tokenId, address userAddress);
 
     constructor() ERC721("UserToken", "UTKN") {}
 
@@ -41,6 +42,7 @@ contract UserRegistry is ERC721 {
         allTokenIds.push(tokenId);
         
         emit DepositMade(tokenId, msg.value);
+        emit UserRegistered(tokenId, msg.sender);
         return tokenId;
     }
 

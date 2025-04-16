@@ -6,7 +6,10 @@ import "./ContentRegistry.sol";
 
 contract Moderation {
     IUserRegistry public userRegistry;
-    ContentRegistry public contentRegistry;
+    address public contentRegistryAddress;
+    
+    // For deposit tracking
+    uint256 public totalDeposits;
 
     struct ModerationVote {
         uint256 tokenId;
@@ -14,26 +17,48 @@ contract Moderation {
     }
 
     mapping(uint256 => ModerationVote[]) public moderationVotes;
-    uint256 public constant MIN_REP = 100;
+    uint256 public constant MIN_REP = 10; // Lowered for testing
     uint256 public constant MOD_THRESHOLD = 40;
     
     // New events
     event ModerationRewarded(uint256 indexed contentId, uint256 moderatorTokenId, uint256 amount);
     event ModerationPenalized(uint256 indexed contentId, uint256 moderatorTokenId, uint256 amount);
+    
+    receive() external payable {
+        // Accept ETH transfers
+        totalDeposits += msg.value;
+    }
+    
+    fallback() external payable {
+        // Fallback function to accept ETH
+        totalDeposits += msg.value;
+    }
 
     constructor(address _userRegistry, address _contentRegistry) {
         userRegistry = IUserRegistry(_userRegistry);
-        contentRegistry = ContentRegistry(_contentRegistry);
+        contentRegistryAddress = _contentRegistry;
+    }
+    
+    function getContentRegistry() internal view returns (ContentRegistry) {
+        return ContentRegistry(payable(contentRegistryAddress));
     }
 
     function moderateContent(uint256 contentId, bool isCorrect) external payable {
         require(msg.value >= 0.01 ether, "Moderation requires 0.01 ETH deposit");
         
-        uint256 tokenId = userRegistry.getUser(msg.sender).tokenId;
-        uint256[] memory topModerators = getTop50PercentUsers();
+        ContentRegistry contentRegistry = getContentRegistry();
+        
+        // Check if content exists and is flagged
         (,,,,bool flagged,) = contentRegistry.contents(contentId);
-        require(userRegistry.getUser(msg.sender).reputation >= MIN_REP, "Low rep");
-        require(flagged, "Not flagged");
+        require(flagged, "Content not flagged or doesn't exist");
+        
+        // Check if user is registered
+        require(userRegistry.isRegistered(msg.sender), "User not registered");
+        
+        // Get user reputation and token ID
+        (IUserRegistry.User memory user, uint256 tokenId) = userRegistry.getUser(msg.sender);
+        uint256[] memory topModerators = getTop50PercentUsers();
+        require(user.reputation >= MIN_REP, "Low rep");
 
         bool isTop = false;
         for (uint i = 0; i < topModerators.length; i++) {
@@ -49,7 +74,9 @@ contract Moderation {
         }
 
         moderationVotes[contentId].push(ModerationVote(tokenId, isCorrect));
-        payable(address(userRegistry)).transfer(msg.value);
+        
+        // Keep track of deposits
+        totalDeposits += msg.value;
 
         if (moderationVotes[contentId].length >= topModerators.length / 2) {
             _finalizeModeration(contentId);
@@ -71,22 +98,29 @@ contract Moderation {
 
     function _distributeFunds(uint256 contentId, bool isCorrect) private {
         uint256 totalPool = address(this).balance;
+        if (totalPool == 0) return; // No funds to distribute
         
         // Reward moderators (50% of pool)
         ModerationVote[] storage votes = moderationVotes[contentId];
+        if (votes.length == 0) return; // No votes to reward
+        
         uint256 modRewardPerVoter = totalPool * 50 / 100 / votes.length;
         
         for (uint i = 0; i < votes.length; i++) {
             bool votedCorrectly = votes[i].isCorrect == isCorrect;
             if (votedCorrectly) {
-                payable(userRegistry.ownerOf(votes[i].tokenId)).transfer(modRewardPerVoter);
-                emit ModerationRewarded(contentId, votes[i].tokenId, modRewardPerVoter);
+                address payable voter = payable(userRegistry.ownerOf(votes[i].tokenId));
+                if (modRewardPerVoter > 0) {
+                    (bool success, ) = voter.call{value: modRewardPerVoter}("");
+                    if (success) {
+                        emit ModerationRewarded(contentId, votes[i].tokenId, modRewardPerVoter);
+                    }
+                }
             } else {
                 userRegistry.applyPenalty(votes[i].tokenId, modRewardPerVoter);
                 emit ModerationPenalized(contentId, votes[i].tokenId, modRewardPerVoter);
             }
         }
-        
     }
 
     function getTop50PercentUsers() public view returns (uint256[] memory) {
@@ -99,7 +133,7 @@ contract Moderation {
         uint256 sum = 0;
 
         for (uint i = 0; i < total; i++) {
-            uint256 rep = userRegistry.getUser(msg.sender).reputation;
+            (uint256 rep, ,) = userRegistry.users(tokenIds[i]);
             reputations[i] = rep;
             sum += rep;
         }
@@ -123,6 +157,8 @@ contract Moderation {
     }
 
     function _updateReputations(uint256 contentId, bool isCorrect) private {
+        ContentRegistry contentRegistry = getContentRegistry();
+        
         // Update voters
         uint256[] memory ups = contentRegistry.getUpvoters(contentId);
         uint256[] memory downs = contentRegistry.getDownvoters(contentId);

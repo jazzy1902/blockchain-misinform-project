@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { callContractFunction, callViewFunction, connectWallet } from "../utils/ethers";
+import { ethers } from "ethers";
 
 function Contracts() {
   const [dataHash, setDataHash] = useState("");
@@ -13,6 +14,9 @@ function Contracts() {
   const [walletConnected, setWalletConnected] = useState(false);
   const [walletAddress, setWalletAddress] = useState("");
   const [isRegistered, setIsRegistered] = useState(false);
+  const [userInfo, setUserInfo] = useState(null);
+  const [depositAmount, setDepositAmount] = useState("0.01");
+  const [withdrawAmount, setWithdrawAmount] = useState("0.01");
 
   useEffect(() => {
     const checkWalletAndRegistration = async () => {
@@ -28,7 +32,19 @@ function Contracts() {
           
           // Only try to get user details if registered
           if (isUserRegistered) {
-            const [user, tokenId] = await callViewFunction("userRegistry", "getUser", address);
+            try {
+              const userResult = await callViewFunction("userRegistry", "getUser", address);
+              const userData = {
+                reputation: userResult[0].reputation.toString(),
+                contentCount: userResult[0].contentCount.toString(),
+                ethDeposit: ethers.formatEther(userResult[0].ethDeposit),
+                tokenId: userResult[1].toString()
+              };
+              setUserInfo(userData);
+            } catch (userErr) {
+              console.error("Error getting user data:", userErr);
+              setError("Failed to get user data. Please try again.");
+            }
           }
         } catch (err) {
           console.error("Error checking registration:", err);
@@ -53,7 +69,18 @@ function Contracts() {
       
       // Only try to get user details if registered
       if (isUserRegistered) {
-        const [user, tokenId] = await callViewFunction("userRegistry", "getUser", address);
+        try {
+          const userResult = await callViewFunction("userRegistry", "getUser", address);
+          const userData = {
+            reputation: userResult[0].reputation.toString(),
+            contentCount: userResult[0].contentCount.toString(),
+            ethDeposit: ethers.formatEther(userResult[0].ethDeposit),
+            tokenId: userResult[1].toString()
+          };
+          setUserInfo(userData);
+        } catch (userErr) {
+          console.error("Error getting user data:", userErr);
+        }
       }
       
       setResult(`Connected wallet: ${address}`);
@@ -72,12 +99,112 @@ function Contracts() {
     setError(null);
     try {
       const { receipt } = await callContractFunction("userRegistry", "register");
-      const userRegisteredEvent = receipt.logs.find(log => log.event === "UserRegistered");
-      const tokenId = userRegisteredEvent ? userRegisteredEvent.args.tokenId.toString() : "Unknown";
-      setIsRegistered(true);
-      setResult(`Registered successfully! Token ID: ${tokenId}`);
+      
+      console.log("Register receipt:", receipt);
+      let tokenId = "Unknown";
+      
+      // Find TokenId from logs - simplified version
+      try {
+        // Wait a moment for blockchain to stabilize
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Check if registration was successful
+        const isRegistered = await callViewFunction("userRegistry", "isRegistered", walletAddress);
+        setIsRegistered(isRegistered);
+        
+        if (isRegistered) {
+          // Get user data
+          const userResult = await callViewFunction("userRegistry", "getUser", walletAddress);
+          tokenId = userResult[1].toString();
+          
+          const userData = {
+            reputation: userResult[0].reputation.toString(),
+            contentCount: userResult[0].contentCount.toString(),
+            ethDeposit: ethers.formatEther(userResult[0].ethDeposit),
+            tokenId: tokenId
+          };
+          setUserInfo(userData);
+        }
+        
+        setResult(`Registered successfully! Token ID: ${tokenId}`);
+      } catch (userErr) {
+        console.error("Error getting user data after registration:", userErr);
+        setResult("Registration transaction succeeded, but couldn't get token ID.");
+      }
     } catch (err) {
       setError(`Registration failed: ${err.message}`);
+    }
+    setLoading(false);
+  };
+
+  const depositETH = async () => {
+    if (!walletConnected || !isRegistered || !userInfo) {
+      setError("Please connect wallet and register first.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      await callContractFunction(
+        "userRegistry", 
+        "depositETH", 
+        userInfo.tokenId, 
+        { value: ethers.parseEther(depositAmount) }
+      );
+      
+      // Get updated user data
+      try {
+        const userResult = await callViewFunction("userRegistry", "getUser", walletAddress);
+        const userData = {
+          reputation: userResult[0].reputation.toString(),
+          contentCount: userResult[0].contentCount.toString(),
+          ethDeposit: ethers.formatEther(userResult[0].ethDeposit),
+          tokenId: userResult[1].toString()
+        };
+        setUserInfo(userData);
+      } catch (userErr) {
+        console.error("Error getting updated user data:", userErr);
+      }
+      
+      setResult(`Deposited ${depositAmount} ETH successfully`);
+    } catch (err) {
+      setError(`Deposit failed: ${err.message}`);
+    }
+    setLoading(false);
+  };
+
+  const withdrawETH = async () => {
+    if (!walletConnected || !isRegistered || !userInfo) {
+      setError("Please connect wallet and register first.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      await callContractFunction(
+        "userRegistry", 
+        "withdrawETH", 
+        userInfo.tokenId, 
+        ethers.parseEther(withdrawAmount)
+      );
+      
+      // Get updated user data
+      try {
+        const userResult = await callViewFunction("userRegistry", "getUser", walletAddress);
+        const userData = {
+          reputation: userResult[0].reputation.toString(),
+          contentCount: userResult[0].contentCount.toString(),
+          ethDeposit: ethers.formatEther(userResult[0].ethDeposit),
+          tokenId: userResult[1].toString()
+        };
+        setUserInfo(userData);
+      } catch (userErr) {
+        console.error("Error getting updated user data:", userErr);
+      }
+      
+      setResult(`Withdrew ${withdrawAmount} ETH successfully`);
+    } catch (err) {
+      setError(`Withdrawal failed: ${err.message}`);
     }
     setLoading(false);
   };
@@ -95,8 +222,32 @@ function Contracts() {
     setError(null);
     try {
       const { receipt } = await callContractFunction("contentRegistry", "submitContent", dataHash);
-      const contentId = receipt.logs.find(log => log.event === "ContentSubmitted").args.id.toString();
-      setResult(`Content submitted with ID: ${contentId}`);
+      console.log("Submit content receipt:", receipt);
+      
+      try {
+        // Wait a moment for blockchain to stabilize
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Get content count to determine the ID
+        const contentCount = await callViewFunction("contentRegistry", "getContentsCount");
+        const contentId = (parseInt(contentCount.toString()) - 1).toString();
+        
+        // Update user info after submitting content
+        const userResult = await callViewFunction("userRegistry", "getUser", walletAddress);
+        const userData = {
+          reputation: userResult[0].reputation.toString(),
+          contentCount: userResult[0].contentCount.toString(),
+          ethDeposit: ethers.formatEther(userResult[0].ethDeposit),
+          tokenId: userResult[1].toString()
+        };
+        setUserInfo(userData);
+        
+        setResult(`Content submitted with ID: ${contentId}`);
+      } catch (contentErr) {
+        console.error("Error getting content data:", contentErr);
+        setResult("Content submitted successfully, but couldn't get the content ID.");
+      }
+      
       setDataHash("");
     } catch (err) {
       setError(`Content submission failed: ${err.message}`);
@@ -117,6 +268,17 @@ function Contracts() {
     setError(null);
     try {
       await callContractFunction("contentRegistry", "voteContent", contentId, isUpvote);
+      
+      // Update user info after voting
+      const userResult = await callViewFunction("userRegistry", "getUser", walletAddress);
+      const userData = {
+        reputation: userResult[0].reputation.toString(),
+        contentCount: userResult[0].contentCount.toString(),
+        ethDeposit: ethers.formatEther(userResult[0].ethDeposit),
+        tokenId: userResult[1].toString()
+      };
+      setUserInfo(userData);
+      
       setResult(`Voted ${isUpvote ? "up" : "down"} on content ID: ${contentId}`);
       setContentId("");
     } catch (err) {
@@ -138,6 +300,17 @@ function Contracts() {
     setError(null);
     try {
       await callContractFunction("moderation", "moderateContent", moderateId, isCorrect);
+      
+      // Update user info after moderation
+      const userResult = await callViewFunction("userRegistry", "getUser", walletAddress);
+      const userData = {
+        reputation: userResult[0].reputation.toString(),
+        contentCount: userResult[0].contentCount.toString(),
+        ethDeposit: ethers.formatEther(userResult[0].ethDeposit),
+        tokenId: userResult[1].toString()
+      };
+      setUserInfo(userData);
+      
       setResult(`Moderated content ID: ${moderateId} as ${isCorrect ? "correct" : "incorrect"}`);
       setModerateId("");
     } catch (err) {
@@ -185,13 +358,60 @@ function Contracts() {
                   disabled={loading}
                   className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 disabled:bg-blue-300"
                 >
-                  {loading ? "Registering..." : "Register"}
+                  {loading ? "Registering..." : "Register (0.01 ETH deposit)"}
                 </button>
               </div>
             )}
 
-            {isRegistered && (
+            {isRegistered && userInfo && (
               <>
+                <div className="mb-6 p-4 bg-gray-50 rounded-md">
+                  <h2 className="text-lg font-medium mb-2">Your Account</h2>
+                  <p><span className="font-medium">Token ID:</span> {userInfo.tokenId}</p>
+                  <p><span className="font-medium">Reputation:</span> {userInfo.reputation}</p>
+                  <p><span className="font-medium">ETH Deposit:</span> {userInfo.ethDeposit} ETH</p>
+                </div>
+                
+                <div className="mb-6">
+                  <h2 className="text-lg font-medium mb-2">Manage Deposit</h2>
+                  <div className="flex gap-2 mb-2">
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      value={depositAmount}
+                      onChange={(e) => setDepositAmount(e.target.value)}
+                      className="flex-grow p-2 border rounded-md"
+                      placeholder="ETH Amount"
+                    />
+                    <button
+                      onClick={depositETH}
+                      disabled={loading}
+                      className="bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 disabled:bg-blue-300"
+                    >
+                      Deposit
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      value={withdrawAmount}
+                      onChange={(e) => setWithdrawAmount(e.target.value)}
+                      className="flex-grow p-2 border rounded-md"
+                      placeholder="ETH Amount"
+                    />
+                    <button
+                      onClick={withdrawETH}
+                      disabled={loading}
+                      className="bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 disabled:bg-blue-300"
+                    >
+                      Withdraw
+                    </button>
+                  </div>
+                </div>
+
                 <div className="mb-6">
                   <h2 className="text-lg font-medium mb-2">Submit Content</h2>
                   <input
@@ -206,7 +426,7 @@ function Contracts() {
                     disabled={loading}
                     className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 disabled:bg-blue-300"
                   >
-                    {loading ? "Submitting..." : "Submit Content"}
+                    {loading ? "Submitting..." : "Submit Content (0.005 ETH)"}
                   </button>
                 </div>
 
@@ -232,7 +452,7 @@ function Contracts() {
                     disabled={loading}
                     className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 disabled:bg-blue-300"
                   >
-                    {loading ? "Voting..." : "Vote"}
+                    {loading ? "Voting..." : "Vote (0.001 ETH)"}
                   </button>
                 </div>
 
@@ -258,7 +478,7 @@ function Contracts() {
                     disabled={loading}
                     className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 disabled:bg-blue-300"
                   >
-                    {loading ? "Moderating..." : "Moderate"}
+                    {loading ? "Moderating..." : "Moderate (0.01 ETH)"}
                   </button>
                 </div>
 
