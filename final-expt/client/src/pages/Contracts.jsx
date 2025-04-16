@@ -21,8 +21,15 @@ function Contracts() {
           const address = window.ethereum.selectedAddress;
           setWalletAddress(address);
           setWalletConnected(true);
-          const [user, tokenId] = await callViewFunction("userRegistry", "getUser", address);
-          setIsRegistered(tokenId > 0 || user.reputation > 0 || user.contentCount > 0);
+          
+          // First check if user is registered
+          const isUserRegistered = await callViewFunction("userRegistry", "isRegistered", address);
+          setIsRegistered(isUserRegistered);
+          
+          // Only try to get user details if registered
+          if (isUserRegistered) {
+            const [user, tokenId] = await callViewFunction("userRegistry", "getUser", address);
+          }
         } catch (err) {
           console.error("Error checking registration:", err);
           setError("Failed to check registration status. Please reconnect wallet.");
@@ -39,8 +46,16 @@ function Contracts() {
       const address = await connectWallet();
       setWalletAddress(address);
       setWalletConnected(true);
-      const [user, tokenId] = await callViewFunction("userRegistry", "getUser", address);
-      setIsRegistered(tokenId > 0 || user.reputation > 0 || user.contentCount > 0);
+      
+      // First check if user is registered
+      const isUserRegistered = await callViewFunction("userRegistry", "isRegistered", address);
+      setIsRegistered(isUserRegistered);
+      
+      // Only try to get user details if registered
+      if (isUserRegistered) {
+        const [user, tokenId] = await callViewFunction("userRegistry", "getUser", address);
+      }
+      
       setResult(`Connected wallet: ${address}`);
     } catch (err) {
       setError(`Connection failed: ${err.message}`);
